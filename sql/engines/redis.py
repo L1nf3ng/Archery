@@ -74,7 +74,39 @@ class RedisEngine(EngineBase):
         result_set = ResultSet(full_sql=sql)
         try:
             conn = self.get_connection(db_name=db_name)
-            rows = conn.execute_command(*shlex.split(sql))
+            parts = shlex.split(sql) if isinstance(sql, str) else []
+            if not parts:
+                raise ValueError("Empty Redis command")
+            # Enforce validation using query_check before executing the command
+            try:
+                review = self.query_check(db_name=db_name, sql=sql)
+            except Exception:
+                review = None
+            allowed = True
+            if review is not None:
+                if hasattr(review, 'is_pass'):
+                    allowed = allowed and bool(getattr(review, 'is_pass'))
+                if hasattr(review, 'ok'):
+                    allowed = allowed and bool(getattr(review, 'ok'))
+                if hasattr(review, 'has_errors'):
+                    allowed = allowed and not bool(getattr(review, 'has_errors'))
+                if hasattr(review, 'error_count'):
+                    try:
+                        allowed = allowed and int(getattr(review, 'error_count')) == 0
+                    except Exception:
+                        pass
+                if hasattr(review, 'rows'):
+                    try:
+                        for r in getattr(review, 'rows'):
+                            level = str(getattr(r, 'level', '')).lower()
+                            if level in ('error', 'danger', 'critical', 'fatal'):
+                                allowed = False
+                                break
+                    except Exception:
+                        pass
+            if not allowed:
+                raise PermissionError("Redis command is not allowed by policy")
+            rows = conn.execute_command(*parts)
             result_set.column_list = ['Result']
             if isinstance(rows, list) or isinstance(rows, tuple):
                 if re.match(fr'^scan', sql.strip(), re.I):
